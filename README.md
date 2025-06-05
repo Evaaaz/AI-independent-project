@@ -13,14 +13,11 @@ Final Goal: build a CNN with Numpy to classify MNIST and CIFAR-10 datasets.
     - reading (30 minutes): the Stanford CS231n website, focusing on the concept of convolution, padding, stride, and pooling.
     - coding (30 minutes): load the MNIST and CIFAR-10 datasets. Design the class structure for CNN, including Convolution, MaxPooling, FullyConnected, and Softmax layers.
 
-- [ ] Jun 4:
-    - reading (15 minutes): the source code from the reference codebase, focusing on the implementation of convolutional layers and pooling layers.
-    - coding (45 minutes): implement the forward pass for the neural network, and sanity check the output shape.
+- [X] Jun 4:
+    - reading (30 minutes): the source code from the reference codebase, focusing on the implementation of convolutional layers and pooling layers.
+    - coding (60 minutes): 
+        - implement the forward pass for the convolutional layer and pooling layer, and do tests to ensure correctness.
+        - build a neural network using the implemented layers, also including ReLU, flattening, and softmax layers.
 
 - [ ] Jun 5:
-    - reading (15 minutes): the source code from the reference codebase, focusing on the backward pass and gradient computation.
-    - coding (45 minutes): implement the backward pass for the neural network, and sanity check that loss can decrease.
-
-- [ ] Jun 6:
-    - experimenting (30 minutes): train the CNN on MNIST and CIFAR-10 datasets, and observe the training and validation accuracy.
-    - summary (30 minutes): document the results.
+    - 
