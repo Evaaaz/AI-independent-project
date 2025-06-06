@@ -1,6 +1,6 @@
 # AI Independent Project
 
-Final Goal: build a CNN with Numpy to classify MNIST and CIFAR-10 datasets.
+Final Goal: build a CNN with Numpy to classify MNIST dataset.
 
 ## Reference Sources
 
@@ -19,5 +19,9 @@ Final Goal: build a CNN with Numpy to classify MNIST and CIFAR-10 datasets.
         - implement the forward pass for the convolutional layer and pooling layer, and do tests to ensure correctness.
         - build a neural network using the implemented layers, also including ReLU, flattening, and softmax layers.
 
-- [ ] Jun 5:
-    - 
+- [X] Jun 5:
+    - reading (30 minutes): the source code from the reference codebase, focusing on the implementation of backpropagation for convolutional layers and pooling layers.
+    - coding (60 minutes): 
+        - implement the backward pass for the convolutional layer and pooling layer, and other layers
+        - run backpropagation for several epoch on the MNIST dataset, and check if the loss is decreasing.
+        - test the accuracy of the model on the MNIST dataset.

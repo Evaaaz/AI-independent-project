@@ -36,6 +36,9 @@ class Convolution(Layer):
             height += 2 * self.padding
             width += 2 * self.padding
             
+        # cache input
+        self.padded_input = input
+            
         # calculate output dimensions
         out_height = (height - self.kernel_size) // self.stride + 1
         out_width = (width - self.kernel_size) // self.stride + 1
@@ -54,6 +57,49 @@ class Convolution(Layer):
                 output[:, :, out_x, out_y] += self.kernel_bias[None, :]
         
         return output
+    
+    def backward(self, output_gradient):
+        input = self.padded_input # use the cache
+        batch_size, in_channels, height, width = input.shape
+        _, out_channels, out_height, out_width = output_gradient.shape
+        
+        padded_gradient = np.zeros((batch_size, self.in_channels, height, width))
+        self.kernel_gradient = np.zeros((self.out_channels, self.in_channels, self.kernel_size, self.kernel_size))
+        self.kernel_bias_gradient = np.zeros((self.out_channels,))
+        
+        for out_x in range(out_height):
+            for out_y in range(out_width):
+                for kernel_x in range(self.kernel_size):
+                    for kernel_y in range(self.kernel_size):
+                        # update input gradient
+                        padded_gradient[:, :, out_x * self.stride + kernel_x, out_y * self.stride + kernel_y] += np.sum(
+                            output_gradient[:, :, out_x, out_y, None] * self.kernel_weight[None, :, :, kernel_x, kernel_y],
+                            axis=1
+                        )
+                        # in this line:
+                        # input: batch, in channels
+                        # output_gradient: batch, out channels, (new axis)
+                        # kernel: (new axis), out channels, in channels
+                        
+                        # update kernel gradient
+                        self.kernel_gradient[:, :, kernel_x, kernel_y] += np.sum(
+                            input[:, None, :, out_x * self.stride + kernel_x, out_y * self.stride + kernel_y] * output_gradient[:, :, out_x, out_y][:, :, None],
+                            axis=0
+                        )
+                        # in this line:
+                        # kernel gradient: out channels, in channels
+                        # input: batch, (new axis), in channels
+                        # output_gradient: batch, out channels, (new axis)
+
+        # update kernel bias gradient
+        self.kernel_bias_gradient = np.sum(output_gradient, axis=(0, 2, 3))
+        return padded_gradient[:, :, self.padding:-self.padding, self.padding:-self.padding] # input gradient
+
+    def gradient_descent(self, learning_rate):
+        self.kernel_weight -= learning_rate * self.kernel_gradient
+        self.kernel_bias -= learning_rate * self.kernel_bias_gradient
+        
+        del self.kernel_gradient, self.kernel_bias_gradient
 
 class MaxPooling(Layer):
     def __init__(self, kernel_size, stride):
@@ -61,29 +107,67 @@ class MaxPooling(Layer):
         self.stride = stride
         
     def forward(self, input):
+        # cache input
+        self.input = input
+        
         batch_size, in_channels, height, width = input.shape
         
         out_height = (height - self.kernel_size) // self.stride + 1
         out_width = (width - self.kernel_size) // self.stride + 1
         output = np.empty((batch_size, in_channels, out_height, out_width))
         
+        # cache max indices
+        self.all_max_indices = np.empty((batch_size, in_channels, out_height, out_width), dtype=int)
+        
         for out_x in range(out_height):
             for out_y in range(out_width):
-                output[:, :, out_x, out_y] = np.max(
-                    input[:, :, out_x * self.stride : out_x * self.stride + self.kernel_size, out_y * self.stride : out_y * self.stride + self.kernel_size],
-                    axis=(2, 3)
-                )
+                sliced_input = input[:, :, out_x * self.stride : out_x * self.stride + self.kernel_size, out_y * self.stride : out_y * self.stride + self.kernel_size].reshape(batch_size, in_channels, self.kernel_size * self.kernel_size)
+                max_index = np.argmax(sliced_input, axis=2)
+                output[:, :, out_x, out_y] = np.max(sliced_input, axis=2)
+
+                self.all_max_indices[:, :, out_x, out_y] = max_index
         
         return output
     
+    def backward(self, output_gradient):
+        input = self.input
+        max_indices = self.all_max_indices
+        batch_size, in_channels, height, width = input.shape
+        _, _, out_height, out_width = output_gradient.shape
+        
+        input_gradient = np.zeros_like(input)
+        
+        for out_x in range(out_height):
+            for out_y in range(out_width):
+                max_index_mask = np.arange(self.kernel_size * self.kernel_size)[None, None, :] == max_indices[:, :, out_x, out_y][:, :, None]
+                max_index_mask = max_index_mask.reshape(batch_size, in_channels, self.kernel_size, self.kernel_size)
+                
+                input_gradient[:, :, out_x * self.stride : out_x * self.stride + self.kernel_size, out_y * self.stride : out_y * self.stride + self.kernel_size] += output_gradient[:, :, out_x, out_y, None, None] * max_index_mask
+            
+        return input_gradient
+                
+
 class ReLU(Layer):
     def forward(self, input):
+        # cache input
+        self.input = input
         return np.maximum(0, input)
+    
+    def backward(self, output_gradient):
+        # use cached input
+        return np.where(self.input > 0, output_gradient, 0)
 
 class Flatten(Layer):
     def forward(self, input):
+        # cache input
+        self.input_shape = input.shape
+        
         batch_size = input.shape[0]
         return input.reshape(batch_size, -1)
+
+    def backward(self, output_gradient):
+        # use cached input shape
+        return output_gradient.reshape(self.input_shape)
 
 class FullyConnected(Layer):
     def __init__(self, in_features, out_features):
@@ -98,13 +182,42 @@ class FullyConnected(Layer):
         self.bias = np.random.normal(size=self.bias.shape) * 0.1
         
     def forward(self, input):
+        # cache input
+        self.input = input
+        
         return input @ self.weight + self.bias[None, :]
 
-class Softmax(Layer):
+    def backward(self, output_gradient):
+        input = self.input
+        # input: (batch_size, in_features)
+        # weight: (in_features, out_features)
+        # output_gradient: (batch_size, out_features)
+        
+        self.weight_gradient = input.T @ output_gradient
+        self.bias_gradient = np.sum(output_gradient, axis=0)
+        return output_gradient @ self.weight.T # input gradient
+    
+    def gradient_descent(self, learning_rate):
+        self.weight -= learning_rate * self.weight_gradient
+        self.bias -= learning_rate * self.bias_gradient
+        
+        del self.weight_gradient, self.bias_gradient
+
+class LogSoftmax(Layer):
     def forward(self, input):
         # numerical trick: subtract the max
         input = input - np.max(input, axis=1, keepdims=True)
-        return np.exp(input) / np.sum(np.exp(input), axis=1, keepdims=True)
+        log_softmax = input - np.log(np.sum(np.exp(input), axis=1, keepdims=True))
+        
+        # cache input
+        self.input = input
+        self.log_softmax = log_softmax
+        return log_softmax
+    
+    def backward(self, output_gradient):
+        softmax = np.exp(self.log_softmax)
+        gradient = output_gradient - softmax * np.sum(output_gradient, axis=1, keepdims=True)
+        return gradient
 
 class Sequential(Layer):
     def __init__(self, *layers):
@@ -119,6 +232,16 @@ class Sequential(Layer):
         for layer in self.layers:
             if hasattr(layer, 'initialize'):
                 layer.initialize()
+
+    def backward(self, output_gradient):
+        for layer in reversed(self.layers):
+            output_gradient = layer.backward(output_gradient)
+        return output_gradient
+    
+    def gradient_descent(self, learning_rate):
+        for layer in self.layers:
+            if hasattr(layer, 'gradient_descent'):
+                layer.gradient_descent(learning_rate)
 
 def build_CNN_mnist():
     return Sequential(
@@ -137,8 +260,19 @@ def build_CNN_mnist():
         ReLU(),
         FullyConnected(in_features=128, out_features=10),
         
-        Softmax()
+        LogSoftmax()
     )
+    
+def cross_entropy_loss_and_gradient(log_softmax_output, target):
+    # log_softmax_output: (batch_size, num_classes)
+    # target: (batch_size,)
+    
+    batch_size, num_classes = log_softmax_output.shape
+    mask = np.arange(num_classes)[None, :] == target[:, None]
+    
+    loss = - np.sum(mask * log_softmax_output) / batch_size
+    gradient = - (mask / batch_size)
+    return loss, gradient
 
 def build_CNN_cifar10():
     raise NotImplementedError
@@ -154,6 +288,10 @@ if __name__ == "__main__":
     print("Input shape:", input_data.shape)
     print("Output shape:", output_data.shape) # expected: (2, 2, 5, 5)
     
+    backward_gradient = conv.backward(np.random.randn(*output_data.shape))
+    print("Backward gradient shape:", backward_gradient.shape)  # expected: (2, 3, 5, 5)
+    print("Weight gradient shape:", conv.kernel_gradient.shape)  # expected: (2, 3, 3, 3)
+    print("Bias gradient shape:", conv.kernel_bias_gradient.shape)  # expected: (2,)
     
     ##### perform test for the value, when the channel is all 1
     conv = Convolution(in_channels=1, out_channels=1, kernel_size=3, stride=1, padding=1)
@@ -176,6 +314,10 @@ if __name__ == "__main__":
     output_data = maxpool.forward(input_data)
     print("Input shape:", input_data.shape)
     print("Output shape:", output_data.shape)  # expected: (2, 3, 2, 2)
+    
+    backward_gradient = maxpool.backward(np.random.randn(*output_data.shape))
+    print("Backward gradient shape:", backward_gradient.shape)  # expected: (2, 3, 4, 4)
+    
     N, C = 2, 3
 
     ref_out = np.empty((N, C, 2, 2))

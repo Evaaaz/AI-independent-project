@@ -1,4 +1,4 @@
-# Jun 4: Implementation of forward for Convolutional and Pooling layers
+# Implementation Notes
 
 ## Convolutional Layer
 
@@ -6,7 +6,7 @@ The input tensor has shape: `(batch_size, in_channels, height, width)`. Each ima
 
 ![](./conv-demo.png)
 
-### Step 1: Padding
+### Forward Step 1: Padding
 
 We use zero padding for the padding operation. The effective shape of the input tensor after padding will be `(batch_size, in_channels, height + 2 * padding, width + 2 * padding)`.
 
@@ -17,7 +17,7 @@ if self.padding > 0:
     input = padded_input
 ```
 
-### Step 2: Output size
+### Forward Step 2: Output size
 
 ```python
 out_height = (height - self.kernel_size) // self.stride + 1
@@ -32,7 +32,7 @@ $$
 
 Output is created as a zero tensor.
 
-### Step 3: Sliding Window Convolution
+### Forward Step 3: Sliding Window Convolution
 
 Reference image: Vincent Dumoulin’s convolution arithmetic visualizations
 
@@ -61,6 +61,96 @@ Here, broadcasting is used to accelerate the multiplication. The shape is specif
 
 Summing over `axis=2` is done to collapse the input channels, resulting in the output shape of `(batch_size, out_channels)`.
 
+### Backpropagation of the Convolutional Layer
+
+The gradient of the input and the convolutional kernel can be computed in the main loop:
+
+```python
+for out_x in range(out_height):
+    for out_y in range(out_width):
+        for kernel_x in range(self.kernel_size):
+            for kernel_y in range(self.kernel_size):
+                # update input gradient
+                padded_gradient[:, :, out_x * self.stride + kernel_x, out_y * self.stride + kernel_y] += np.sum(
+                    output_gradient[:, :, out_x, out_y, None] * self.kernel_weight[None, :, :, kernel_x, kernel_y],
+                    axis=1
+                )
+                
+                # update kernel gradient
+                self.kernel_gradient[:, :, kernel_x, kernel_y] += np.sum(
+                    input[:, None, :, out_x * self.stride + kernel_x, out_y * self.stride + kernel_y] * output_gradient[:, :, out_x, out_y][:, :, None],
+                    axis=0
+                        )
+```
+
+Since the value at `(out_x, out_y)` for the output is contributed by the kernel value at `(kernel_x, kernel_y)` and the input value at `(out_x * stride + kernel_x, out_y * stride + kernel_y)`, we can compute the gradients by reversing this operation.
+
+Notice that the `input` is obtained by caching it during the forward pass.
+
 ## Pooling Layer
 
+The input tensor has shape: `(batch_size, in_channels, height, width)`.  Each channel in every image is pooled independently.
+
+### Forward Step 1: Output size
+
+```python
+out_height = (height - self.kernel_size) // self.stride + 1
+out_width = (width - self.kernel_size) // self.stride + 1
+```
+
+This utilizes the formula for calculating the output size of a convolutional layer:
+
+$$
+\text{output\_size} = \left\lfloor \frac{\text{input\_size} - \text{kernel\_size}}{\text{stride}} \right\rfloor + 1
+$$
+
+
+### Forward Step 2: Sliding Window Max Pooling
+
+```python
+for out_x in range(out_height):
+    for out_y in range(out_width):
+        output[:, :, out_x, out_y] = np.max(
+            input[:, :, 
+                  out_x * self.stride : out_x * self.stride + self.kernel_size,
+                  out_y * self.stride : out_y * self.stride + self.kernel_size],
+            axis=(2, 3)
+        )
+```
+
+The key idea: for each `(out_x, out_y)` output position, extract a sliding window from the input and apply the max operation over the spatial region defined by the kernel size. The value at `(out_x, out_y)` for the output is the maximum value from the corresponding input slice: `(out_x * stride : out_x * stride + kernel_size, out_y * stride : out_y * stride + kernel_size)`.
+
+### Backpropagation of the Pooling Layer
+
+The gradient of the input can be computed in the main loop:
+
+```python
+for out_x in range(out_height):
+    for out_y in range(out_width):
+        max_index_mask = np.arange(self.kernel_size * self.kernel_size)[None, None, :] == max_indices[:, :, out_x, out_y][:, :, None]
+        max_index_mask = max_index_mask.reshape(batch_size, in_channels, self.kernel_size, self.kernel_size)
+        
+        input_gradient[:, :, out_x * self.stride : out_x * self.stride + self.kernel_size, out_y * self.stride : out_y * self.stride + self.kernel_size] += output_gradient[:, :, out_x, out_y, None, None] * max_index_mask
+```
+
+Notice that the `max_indices` is obtained by caching it during the forward pass. For max pooling, only the maximum value in the pooling region contributes to the output, so we need to propagate the gradient only to that position. This is how `max_index_mask` is used.
+
 ## Other Layers
+
+- Softmax: we implement it as log softmax.
+
+$$
+z_i:=\log \text{softmax}(x)_i = x_i - \log\left({\sum_{j} e^{x_j}}\right)
+$$
+
+for numerical stability, subtract the maximum value in the input vector before applying the exponential function.
+
+For backpropagation:
+
+$$
+\frac{\partial \log z_i}{\partial x_j} = 1[i=j] - \frac{e^{x_j}}{\sum_{k} e^{x_k}}
+$$
+
+## Final Results
+
+After training for 5 epochs on 1000 images (notice that due to the computational cost, we only train on a small subset of the MNIST dataset), the model achieves an accuracy of roughly 50% on the test set.
